@@ -62,6 +62,13 @@
                 </div>
             </div>
             <div class="header-actions">
+                <button class="files-btn" id="filesBtn" title="读取文件">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                    </svg>
+                    <span>文件</span>
+                </button>
                 <button class="sidebar-toggle-mobile" id="sidebarToggleMobile" title="对话列表">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <line x1="3" y1="12" x2="21" y2="12"></line>
@@ -102,9 +109,22 @@
             </button>
         </div>
     </div>
+
+    <div class="modal" id="filesModal" aria-hidden="true">
+        <div class="modal-overlay" id="filesModalOverlay"></div>
+        <div class="modal-content" role="dialog" aria-modal="true">
+            <div class="modal-header">
+                <div class="modal-title">读取文件</div>
+                <button class="modal-close" id="filesModalClose" type="button">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="files-path" id="filesCurrentPath"></div>
+                <div class="files-list" id="filesList"></div>
+                <div class="files-hint">点击文件将其内容附加到当前对话。</div>
+            </div>
+        </div>
+    </div>
     
     <script src="script.js"></script>
 </body>
 </html>
-
-

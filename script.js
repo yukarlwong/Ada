@@ -11,6 +11,12 @@ const modelSelectorBtn = document.getElementById('modelSelectorBtn');
 const modelDropdown = document.getElementById('modelDropdown');
 const currentModelName = document.getElementById('currentModelName');
 const modelOptions = document.querySelectorAll('.model-option');
+const filesBtn = document.getElementById('filesBtn');
+const filesModal = document.getElementById('filesModal');
+const filesModalOverlay = document.getElementById('filesModalOverlay');
+const filesModalClose = document.getElementById('filesModalClose');
+const filesList = document.getElementById('filesList');
+const filesCurrentPath = document.getElementById('filesCurrentPath');
 
 // 确保所有元素都已加载
 if (!sendBtn) {
@@ -22,6 +28,10 @@ if (!userInput) {
 
 // API配置
 const API_URL = '/api/chat';
+const FS_LIST_URL = '/api/fs/list';
+const FS_READ_URL = '/api/fs/read';
+const FS_READ_CHUNK_URL = '/api/fs/readChunk';
+const DEFAULT_CHUNK_CHARS = 7000;
 
 // 模型配置
 const modelConfig = {
@@ -35,6 +45,138 @@ let currentModel = localStorage.getItem('selectedModel') || 'llama-3.1-8b-instan
 // 对话会话管理
 let conversations = []; // 所有对话会话
 let currentConversationId = null; // 当前对话ID
+
+let fsCurrentRelPath = '';
+const fileReadOffsetsKey = 'fileReadOffsets';
+
+function loadFileReadOffsets() {
+    try {
+        return JSON.parse(localStorage.getItem(fileReadOffsetsKey) || '{}') || {};
+    } catch {
+        return {};
+    }
+}
+
+function saveFileReadOffsets(map) {
+    localStorage.setItem(fileReadOffsetsKey, JSON.stringify(map || {}));
+}
+
+function openFilesModal() {
+    if (!filesModal) return;
+    filesModal.classList.add('open');
+    filesModal.setAttribute('aria-hidden', 'false');
+    loadFsList('');
+}
+
+function closeFilesModal() {
+    if (!filesModal) return;
+    filesModal.classList.remove('open');
+    filesModal.setAttribute('aria-hidden', 'true');
+}
+
+async function loadFsList(relPath) {
+    if (!filesList || !filesCurrentPath) return;
+    fsCurrentRelPath = relPath || '';
+    filesCurrentPath.textContent = fsCurrentRelPath ? `路径: ${fsCurrentRelPath}` : '路径: (根目录)';
+    filesList.innerHTML = '';
+
+    const url = `${FS_LIST_URL}?path=${encodeURIComponent(fsCurrentRelPath)}`;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+        const errItem = document.createElement('div');
+        errItem.className = 'file-item';
+        errItem.innerHTML = '<div class="file-item-name">无法读取目录</div><div class="file-item-type">error</div>';
+        filesList.appendChild(errItem);
+        return;
+    }
+
+    const data = await resp.json();
+    const items = Array.isArray(data.items) ? data.items : [];
+
+    if (fsCurrentRelPath) {
+        const upItem = document.createElement('div');
+        upItem.className = 'file-item';
+        upItem.innerHTML = '<div class="file-item-name">..</div><div class="file-item-type">dir</div>';
+        upItem.addEventListener('click', () => {
+            const parts = fsCurrentRelPath.split(/[/\\]+/).filter(Boolean);
+            parts.pop();
+            loadFsList(parts.join('/'));
+        });
+        filesList.appendChild(upItem);
+    }
+
+    items.forEach(item => {
+        const el = document.createElement('div');
+        el.className = 'file-item';
+        el.innerHTML = `<div class="file-item-name"></div><div class="file-item-type"></div>`;
+        el.querySelector('.file-item-name').textContent = item.name;
+        el.querySelector('.file-item-type').textContent = item.type;
+
+        el.addEventListener('click', async () => {
+            const nextRel = fsCurrentRelPath ? `${fsCurrentRelPath}/${item.name}` : item.name;
+            if (item.type === 'dir') {
+                await loadFsList(nextRel);
+                return;
+            }
+            await attachFileToConversation(nextRel);
+            closeFilesModal();
+        });
+
+        filesList.appendChild(el);
+    });
+}
+
+async function attachFileToConversation(relFilePath) {
+    let conversation = conversations.find(c => c.id === currentConversationId);
+    if (!conversation) {
+        createNewConversation();
+        conversation = conversations.find(c => c.id === currentConversationId);
+        if (!conversation) return;
+    }
+
+    const offsets = loadFileReadOffsets();
+    const offset = Number(offsets[relFilePath] || 0);
+    const loadingId = addMessage(`正在读取文件: ${relFilePath}（从 ${offset} 开始）`, 'bot', true);
+    try {
+        // Prefer chunked reading to avoid huge payloads hitting Groq limits.
+        const chunkUrl = `${FS_READ_CHUNK_URL}?path=${encodeURIComponent(relFilePath)}&offset=${encodeURIComponent(offset)}&length=${encodeURIComponent(DEFAULT_CHUNK_CHARS)}`;
+        const resp = await fetch(chunkUrl);
+        if (!resp.ok) {
+            throw new Error('文件读取失败');
+        }
+        const data = await resp.json();
+
+        const chunk = data.chunk || '';
+        const done = Boolean(data.done);
+        const nextOffset = Number(data.nextOffset || 0);
+        const totalChars = Number(data.totalChars || 0);
+        const progress = totalChars ? `（进度 ${Math.min(nextOffset, totalChars)}/${totalChars} 字符）` : '';
+        const content = `【文件分段：${relFilePath}】\n【本段 offset=${data.offset}, len=${data.length}, done=${done}】${progress}\n\n${chunk}`;
+
+        conversation.messages.push({
+            role: 'user',
+            content,
+            timestamp: new Date().toISOString()
+        });
+
+        removeMessage(loadingId);
+        addMessage(`已附加文件分段：${relFilePath}${done ? '（已读完）' : '（可继续读下一段）'}`, 'bot');
+
+        if (done) {
+            delete offsets[relFilePath];
+        } else {
+            offsets[relFilePath] = nextOffset;
+        }
+        saveFileReadOffsets(offsets);
+
+        conversation.updatedAt = new Date().toISOString();
+        saveConversations();
+        renderConversationList();
+    } catch (e) {
+        removeMessage(loadingId);
+        addMessage('读取文件失败，请检查服务端配置与文件格式。', 'bot');
+    }
+}
 
 // 对话数据结构：
 // {
@@ -615,6 +757,16 @@ if (newChatBtn) {
 
 if (exportBtn) {
     exportBtn.addEventListener('click', exportConversation);
+}
+
+if (filesBtn) {
+    filesBtn.addEventListener('click', openFilesModal);
+}
+if (filesModalOverlay) {
+    filesModalOverlay.addEventListener('click', closeFilesModal);
+}
+if (filesModalClose) {
+    filesModalClose.addEventListener('click', closeFilesModal);
 }
 
 userInput.addEventListener('keydown', (e) => {
